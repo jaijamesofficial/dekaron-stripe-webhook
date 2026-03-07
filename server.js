@@ -19,12 +19,17 @@ app.post("/stripe-webhook", async (req, res) => {
 
     const event = req.body;
 
+    console.log("Stripe event received:", event.type);
+
     if (event.type === "checkout.session.completed") {
 
         const session = event.data.object;
 
         const amount = session.amount_total / 100;
-        const character = session.metadata.character;
+        const character = session.metadata?.character;
+
+        console.log("Payment amount:", amount);
+        console.log("Character received:", character);
 
         let coins = 0;
 
@@ -44,28 +49,28 @@ app.post("/stripe-webhook", async (req, res) => {
 UPDATE cash..user_cash
 SET amount = amount + @coins
 WHERE user_no = (
-    SELECT user_no 
-    FROM character 
-    WHERE character_name = @character
+    SELECT user_no
+    FROM character.dbo.USER_CHARACTER
+    WHERE LOWER(character_name) = LOWER(@character)
 )
 `;
 
                 await pool.request()
                     .input("coins", sql.Int, coins)
-                    .input("character", sql.VarChar, character)
+                    .input("character", sql.VarChar(50), character)
                     .query(query);
 
                 console.log(`Coins sent to ${character}: ${coins}`);
 
             } catch (err) {
 
-                console.log("SQL ERROR:", err);
+                console.error("SQL ERROR:", err);
 
             }
 
         } else {
 
-            console.log("Invalid amount or character");
+            console.log("Invalid amount or missing character name");
 
         }
 
