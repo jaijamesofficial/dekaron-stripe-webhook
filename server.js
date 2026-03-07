@@ -138,3 +138,25 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Stripe webhook server running on port", PORT);
 });
+app.get("/pack-status", async (req, res) => {
+
+    try {
+
+        const pool = await sql.connect(dbConfig);
+
+        const result = await pool.request().query(`
+            SELECT sold, max_sold
+            FROM cash.dbo.limited_packs
+            WHERE pack_name = 'weekend_pack'
+        `);
+
+        res.json(result.recordset[0]);
+
+    } catch (err) {
+
+        console.log(err);
+        res.status(500).send("Database error");
+
+    }
+
+});
