@@ -5,6 +5,7 @@ const sql = require("mssql");
 const app = express();
 app.use(express.json());
 
+/* DATABASE CONFIG */
 const dbConfig = {
     user: process.env.DB_USER,
     password: process.env.DB_PASS,
@@ -15,6 +16,7 @@ const dbConfig = {
     }
 };
 
+/* STRIPE WEBHOOK */
 app.post("/stripe-webhook", async (req, res) => {
 
     const event = req.body;
@@ -26,10 +28,11 @@ app.post("/stripe-webhook", async (req, res) => {
         const session = event.data.object;
 
         const amount = session.amount_total / 100;
-        const character = session.metadata?.character;
 
-        console.log("Payment amount:", amount);
-        console.log("Character received:", character);
+        const character = session.custom_fields?.[0]?.text?.value;
+
+        console.log("Amount paid:", amount);
+        console.log("Character name:", character);
 
         let coins = 0;
 
@@ -39,38 +42,42 @@ app.post("/stripe-webhook", async (req, res) => {
         if (amount === 100) coins = 125000;
         if (amount === 200) coins = 300000;
 
-        if (coins > 0 && character) {
+        if (!character) {
+            console.log("ERROR: No character name received from Stripe");
+            return res.sendStatus(200);
+        }
 
-            try {
+        if (coins === 0) {
+            console.log("ERROR: Invalid amount:", amount);
+            return res.sendStatus(200);
+        }
 
-                const pool = await sql.connect(dbConfig);
+        try {
 
-                const query = `
-UPDATE cash..user_cash
+            console.log("Connecting to database...");
+
+            const pool = await sql.connect(dbConfig);
+
+            const query = `
+UPDATE cash.dbo.user_cash
 SET amount = amount + @coins
 WHERE user_no = (
     SELECT user_no
     FROM character.dbo.USER_CHARACTER
-    WHERE LOWER(character_name) = LOWER(@character)
+    WHERE character_name = @character
 )
 `;
 
-                await pool.request()
-                    .input("coins", sql.Int, coins)
-                    .input("character", sql.VarChar(50), character)
-                    .query(query);
+            await pool.request()
+                .input("coins", sql.Int, coins)
+                .input("character", sql.VarChar(50), character)
+                .query(query);
 
-                console.log(`Coins sent to ${character}: ${coins}`);
+            console.log(`SUCCESS: ${coins} coins sent to ${character}`);
 
-            } catch (err) {
+        } catch (err) {
 
-                console.error("SQL ERROR:", err);
-
-            }
-
-        } else {
-
-            console.log("Invalid amount or missing character name");
+            console.log("SQL ERROR:", err);
 
         }
 
@@ -80,6 +87,10 @@ WHERE user_no = (
 
 });
 
-app.listen(3000, () => {
-    console.log("Stripe webhook server running");
+
+/* START SERVER */
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+    console.log("Stripe webhook server running on port", PORT);
 });
