@@ -34,33 +34,38 @@ app.post("/stripe-webhook", async (req, res) => {
         if (amount === 100) coins = 125000;
         if (amount === 200) coins = 300000;
 
-        if (coins > 0) {
+        if (coins > 0 && character) {
 
             try {
 
-                await sql.connect(dbConfig);
+                const pool = await sql.connect(dbConfig);
 
                 const query = `
-DECLARE @character_no VARCHAR(50)
-DECLARE @amount INT
-
-SELECT @character_no = CHARACTER.dbo.FN_GetCharacterNo('${character}')
-SET @amount = ${coins}
-
 UPDATE cash..user_cash
-SET amount = amount + @amount
-WHERE user_no = dbo.FN_GetUserNo(@character_no)
+SET amount = amount + @coins
+WHERE user_no = (
+    SELECT user_no 
+    FROM character 
+    WHERE character_name = @character
+)
 `;
 
-                await sql.query(query);
+                await pool.request()
+                    .input("coins", sql.Int, coins)
+                    .input("character", sql.VarChar, character)
+                    .query(query);
 
                 console.log(`Coins sent to ${character}: ${coins}`);
 
             } catch (err) {
 
-                console.log(err);
+                console.log("SQL ERROR:", err);
 
             }
+
+        } else {
+
+            console.log("Invalid amount or character");
 
         }
 
