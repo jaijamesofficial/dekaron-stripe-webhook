@@ -4,9 +4,10 @@ const sql = require("mssql");
 
 const app = express();
 
-/* Alleen raw body voor Stripe webhook */
+/* Stripe webhook raw body */
 app.use("/stripe-webhook", express.raw({ type: "application/json" }));
 
+/* SQL config */
 const dbConfig = {
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
@@ -17,10 +18,12 @@ const dbConfig = {
   }
 };
 
+/* STRIPE WEBHOOK */
 app.post("/stripe-webhook", async (req, res) => {
   const sig = req.headers["stripe-signature"];
 
   let event;
+
   try {
     event = stripe.webhooks.constructEvent(
       req.body,
@@ -36,46 +39,32 @@ app.post("/stripe-webhook", async (req, res) => {
 
   if (event.type === "checkout.session.completed") {
     try {
-      const session = await stripe.checkout.sessions.retrieve(
-        event.data.object.id,
-        { expand: ["line_items"] }
-      );
+      const session = event.data.object;
 
       const amount = session.amount_total / 100;
       const character = session.custom_fields?.[0]?.text?.value?.trim();
       const sessionId = session.id;
-      const priceId = session.line_items?.data?.[0]?.price?.id;
 
       console.log("Amount:", amount);
       console.log("Character:", character);
-      console.log("PriceID:", priceId);
 
       let coins = 0;
-      let packType = "normal";
 
-      // Normale packs
       if (amount === 10) coins = 10000;
       if (amount === 20) coins = 22000;
       if (amount === 50) coins = 57000;
       if (amount === 100) coins = 125000;
       if (amount === 200) coins = 300000;
 
-      // Starter pack via Stripe Price ID
-      if (priceId === "price_1T8UpUDOoGuwc7PeA7ryumnb") {
-        coins = 70000;
-        packType = "starter";
-      }
-
       if (!character || coins === 0) {
-        console.log("Invalid character or pack");
+        console.log("Invalid character or amount");
         return res.sendStatus(200);
       }
 
       const pool = await sql.connect(dbConfig);
 
-      // Dubbele betaling blokkeren
-      const duplicate = await pool
-        .request()
+      /* DUPLICATE PAYMENT CHECK */
+      const duplicate = await pool.request()
         .input("sessionId", sql.VarChar(255), sessionId)
         .query(`
           SELECT stripe_session_id
@@ -88,37 +77,8 @@ app.post("/stripe-webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // Starter pack limiet check
-      if (packType === "starter") {
-        const limitCheck = await pool.request().query(`
-          SELECT sold, max_sold
-          FROM cash.dbo.limited_packs
-          WHERE pack_name = 'starter_pack'
-        `);
-
-        if (!limitCheck.recordset.length) {
-          console.log("starter_pack row not found in cash.dbo.limited_packs");
-          return res.sendStatus(200);
-        }
-
-        const sold = limitCheck.recordset[0].sold;
-        const max = limitCheck.recordset[0].max_sold;
-
-        if (sold >= max) {
-          console.log("Starter pack sold out");
-          return res.sendStatus(200);
-        }
-
-        await pool.request().query(`
-          UPDATE cash.dbo.limited_packs
-          SET sold = sold + 1
-          WHERE pack_name = 'starter_pack'
-        `);
-      }
-
-      // Coins geven
-      const updateResult = await pool
-        .request()
+      /* GIVE COINS */
+      const updateResult = await pool.request()
         .input("coins", sql.Int, coins)
         .input("character", sql.VarChar(50), character)
         .query(`
@@ -136,9 +96,8 @@ app.post("/stripe-webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // Log payment
-      await pool
-        .request()
+      /* LOG PAYMENT */
+      await pool.request()
         .input("sessionId", sql.VarChar(255), sessionId)
         .input("character", sql.VarChar(50), character)
         .input("coins", sql.Int, coins)
@@ -149,6 +108,7 @@ app.post("/stripe-webhook", async (req, res) => {
         `);
 
       console.log(`SUCCESS: ${coins} coins sent to ${character}`);
+
     } catch (err) {
       console.log("SQL/PROCESSING ERROR:", err);
     }
@@ -157,28 +117,8 @@ app.post("/stripe-webhook", async (req, res) => {
   return res.json({ received: true });
 });
 
-app.get("/pack-status", async (req, res) => {
-  try {
-    const pool = await sql.connect(dbConfig);
-
-    const result = await pool.request().query(`
-      SELECT sold, max_sold
-      FROM cash.dbo.limited_packs
-      WHERE pack_name = 'starter_pack'
-    `);
-
-    if (!result.recordset.length) {
-      return res.status(404).json({ error: "starter_pack not found" });
-    }
-
-    return res.json(result.recordset[0]);
-  } catch (err) {
-    console.log("PACK STATUS ERROR:", err);
-    return res.status(500).send("Database error");
-  }
-});
-
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
   console.log("Stripe webhook server running on port", PORT);
 });
