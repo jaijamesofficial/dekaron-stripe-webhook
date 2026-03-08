@@ -145,6 +145,8 @@ app.get("/rankings/characters", async (req, res) => {
           ON uc.character_name = gci.character_name
       LEFT JOIN character.dbo.GUILD_INFO gi
           ON gci.guild_code = gi.guild_code
+      WHERE uc.character_name NOT LIKE '[[]GM[]]%'
+        AND uc.character_name NOT LIKE '[[]DEV[]]%'
       ORDER BY uc.wLevel DESC, uc.dwExp DESC
     `);
 
