@@ -42,22 +42,14 @@ app.post("/stripe-webhook", async (req, res) => {
       const session = event.data.object;
 
       const amount = session.amount_total / 100;
-      const character = session.custom_fields?.[0]?.text?.value?.trim();
+      const inputCharacter = session.custom_fields?.[0]?.text?.value?.trim();
       const sessionId = session.id;
 
       console.log("Amount:", amount);
-      console.log("Character:", character);
+      console.log("Input Character:", inputCharacter);
 
-      let coins = 0;
-
-      if (amount === 10) coins = 10000;
-      if (amount === 20) coins = 22000;
-      if (amount === 50) coins = 57000;
-      if (amount === 100) coins = 125000;
-      if (amount === 200) coins = 300000;
-
-      if (!character || coins === 0) {
-        console.log("Invalid character or amount");
+      if (!inputCharacter) {
+        console.log("Invalid character");
         return res.sendStatus(200);
       }
 
@@ -77,32 +69,99 @@ app.post("/stripe-webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      /* CHECK CHARACTER EXISTS */
-      const charCheck = await pool.request()
-        .input("character", sql.VarChar(60), character)
-        .query(`
-          SELECT character_name
-          FROM character.dbo.USER_CHARACTER
-          WHERE character_name = @character
-        `);
+      let coins = 0;
+      let finalCharacter = inputCharacter;
 
-      if (charCheck.recordset.length === 0) {
-        console.log("Character not found:", character);
-        return res.sendStatus(200);
+      /* VIP PACK (€99) */
+      if (amount === 99) {
+        const baseCharacter = inputCharacter.startsWith("{VIP}")
+          ? inputCharacter.substring(5)
+          : inputCharacter;
+
+        const vipCharacter = `{VIP}${baseCharacter}`;
+
+        const charCheck = await pool.request()
+          .input("normalCharacter", sql.VarChar(50), baseCharacter)
+          .input("vipCharacter", sql.VarChar(60), vipCharacter)
+          .query(`
+            SELECT TOP 1 character_name
+            FROM character.dbo.USER_CHARACTER
+            WHERE character_name = @normalCharacter
+               OR character_name = @vipCharacter
+          `);
+
+        if (charCheck.recordset.length === 0) {
+          console.log("VIP pack character not found:", inputCharacter);
+          return res.sendStatus(200);
+        }
+
+        const existingCharacter = charCheck.recordset[0].character_name;
+        const alreadyVip = existingCharacter.startsWith("{VIP}");
+
+        /* Rename to VIP if not already VIP */
+        if (!alreadyVip) {
+          const renameResult = await pool.request()
+            .input("newName", sql.VarChar(60), vipCharacter)
+            .input("oldName", sql.VarChar(50), baseCharacter)
+            .query(`
+              UPDATE character.dbo.USER_CHARACTER
+              SET character_name = @newName
+              WHERE character_name = @oldName
+            `);
+
+          if (renameResult.rowsAffected[0] === 0) {
+            console.log("VIP rename failed for:", baseCharacter);
+            return res.sendStatus(200);
+          }
+
+          console.log(`VIP tag added: ${baseCharacter} -> ${vipCharacter}`);
+        }
+
+        finalCharacter = vipCharacter;
+        coins = 182500;
       }
 
-      /* VIP BONUS IF NAME STARTS WITH {VIP} */
-      const isVip = character.startsWith("{VIP}");
+      /* NORMAL DONATIONS */
+      if (amount === 10) coins = 10000;
+      if (amount === 20) coins = 22000;
+      if (amount === 50) coins = 57000;
+      if (amount === 100) coins = 125000;
+      if (amount === 200) coins = 300000;
 
-      if (isVip) {
-        coins = Math.floor(coins * 1.5);
-        console.log("VIP bonus applied. New coins:", coins);
+      /* VIP BONUS ON NORMAL DONATIONS */
+      if (amount !== 99) {
+        const charCheck = await pool.request()
+          .input("character", sql.VarChar(60), inputCharacter)
+          .query(`
+            SELECT character_name
+            FROM character.dbo.USER_CHARACTER
+            WHERE character_name = @character
+          `);
+
+        if (charCheck.recordset.length === 0) {
+          console.log("Character not found:", inputCharacter);
+          return res.sendStatus(200);
+        }
+
+        finalCharacter = charCheck.recordset[0].character_name;
+
+        const isVip = finalCharacter.toUpperCase().startsWith("{VIP}");
+
+        if (isVip) {
+          coins = Math.floor(coins * 1.5);
+          console.log("VIP bonus applied. New coins:", coins);
+        }
+      }
+
+      if (coins === 0) {
+        console.log("Invalid amount:", amount);
+        return res.sendStatus(200);
       }
 
       /* GIVE COINS */
       const updateResult = await pool.request()
         .input("coins", sql.Int, coins)
-        .input("character", sql.VarChar(60), character)
+        .input("character", sql.VarChar(60), finalCharacter)
         .query(`
           UPDATE cash.dbo.user_cash
           SET amount = amount + @coins
@@ -114,14 +173,14 @@ app.post("/stripe-webhook", async (req, res) => {
         `);
 
       if (updateResult.rowsAffected[0] === 0) {
-        console.log("Character not found or no user_cash row updated:", character);
+        console.log("No user_cash row updated for:", finalCharacter);
         return res.sendStatus(200);
       }
 
       /* LOG PAYMENT */
       await pool.request()
         .input("sessionId", sql.VarChar(255), sessionId)
-        .input("character", sql.VarChar(60), character)
+        .input("character", sql.VarChar(60), finalCharacter)
         .input("coins", sql.Int, coins)
         .query(`
           INSERT INTO cash.dbo.donation_log
@@ -129,7 +188,7 @@ app.post("/stripe-webhook", async (req, res) => {
           VALUES (@sessionId, @character, @coins)
         `);
 
-      console.log(`SUCCESS: ${coins} coins sent to ${character}`);
+      console.log(`SUCCESS: ${coins} coins sent to ${finalCharacter}`);
 
     } catch (err) {
       console.log("SQL/PROCESSING ERROR:", err);
