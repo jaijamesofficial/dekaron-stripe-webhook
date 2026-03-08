@@ -77,10 +77,32 @@ app.post("/stripe-webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
+      /* CHECK CHARACTER EXISTS */
+      const charCheck = await pool.request()
+        .input("character", sql.VarChar(60), character)
+        .query(`
+          SELECT character_name
+          FROM character.dbo.USER_CHARACTER
+          WHERE character_name = @character
+        `);
+
+      if (charCheck.recordset.length === 0) {
+        console.log("Character not found:", character);
+        return res.sendStatus(200);
+      }
+
+      /* VIP BONUS IF NAME STARTS WITH {VIP} */
+      const isVip = character.startsWith("{VIP}");
+
+      if (isVip) {
+        coins = Math.floor(coins * 1.5);
+        console.log("VIP bonus applied. New coins:", coins);
+      }
+
       /* GIVE COINS */
       const updateResult = await pool.request()
         .input("coins", sql.Int, coins)
-        .input("character", sql.VarChar(50), character)
+        .input("character", sql.VarChar(60), character)
         .query(`
           UPDATE cash.dbo.user_cash
           SET amount = amount + @coins
@@ -99,7 +121,7 @@ app.post("/stripe-webhook", async (req, res) => {
       /* LOG PAYMENT */
       await pool.request()
         .input("sessionId", sql.VarChar(255), sessionId)
-        .input("character", sql.VarChar(50), character)
+        .input("character", sql.VarChar(60), character)
         .input("coins", sql.Int, coins)
         .query(`
           INSERT INTO cash.dbo.donation_log
