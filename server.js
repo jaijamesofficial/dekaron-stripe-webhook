@@ -117,6 +117,45 @@ app.post("/stripe-webhook", async (req, res) => {
   return res.json({ received: true });
 });
 
+/* LIVE CHARACTER RANKING API */
+app.get("/rankings/characters", async (req, res) => {
+  try {
+    const pool = await sql.connect(dbConfig);
+
+    const result = await pool.request().query(`
+      SELECT TOP 100
+          uc.character_name AS [character_name],
+          CASE uc.byPCClass
+              WHEN 0 THEN 'Azure Knight'
+              WHEN 1 THEN 'Segita Hunter'
+              WHEN 2 THEN 'Incar Magician'
+              WHEN 3 THEN 'Vicious Summoner'
+              WHEN 4 THEN 'Segnale'
+              WHEN 5 THEN 'Bagi Warrior'
+              WHEN 6 THEN 'Aloken'
+              ELSE 'Unknown'
+          END AS [class_name],
+          uc.wLevel AS [level],
+          ISNULL(gi.guild_name, '-') AS [guild_name],
+          uc.wPKCount AS [pk_kills],
+          uc.wWinRecord AS [pvp_win],
+          uc.wLoseRecord AS [pvp_lose]
+      FROM character.dbo.USER_CHARACTER uc
+      LEFT JOIN character.dbo.GUILD_CHAR_INFO gci
+          ON uc.character_name = gci.character_name
+      LEFT JOIN character.dbo.GUILD_INFO gi
+          ON gci.guild_code = gi.guild_code
+      ORDER BY uc.wLevel DESC, uc.dwExp DESC
+    `);
+
+    return res.json(result.recordset);
+
+  } catch (err) {
+    console.log("RANKING ERROR:", err);
+    return res.status(500).send("Database error");
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
