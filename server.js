@@ -8,7 +8,6 @@ const app = express();
 app.use("/stripe-webhook", express.raw({ type: "application/json" }));
 
 /* SQL config */
-
 const dbConfig = {
 user: process.env.DB_USER,
 password: process.env.DB_PASS,
@@ -20,7 +19,6 @@ trustServerCertificate: true
 };
 
 /* STRIPE WEBHOOK */
-
 app.post("/stripe-webhook", async (req, res) => {
 
 const sig = req.headers["stripe-signature"];
@@ -41,7 +39,7 @@ event = stripe.webhooks.constructEvent(
 
 ```
 console.log("Webhook signature failed:", err.message);
-return res.status(400).send(`Webhook Error: ${err.message}`);
+return res.status(400).send("Webhook Error");
 ```
 
 }
@@ -168,7 +166,7 @@ try {
       VALUES (@sessionId, @character, @coins)
     `);
 
-  console.log(`SUCCESS: ${coins} coins sent to ${character}`);
+  console.log("Coins sent successfully");
 
 } catch (err) {
 
@@ -183,7 +181,7 @@ res.json({ received: true });
 
 });
 
-/* WEBSITE COUNTER API */
+/* WEBSITE PACK COUNTER API */
 
 app.get("/pack-status", async (req, res) => {
 
