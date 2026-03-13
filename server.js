@@ -4,6 +4,8 @@ const sql = require("mssql");
 
 const app = express();
 
+app.use(express.json());
+
 /* Stripe webhook raw body */
 app.use("/stripe-webhook", express.raw({ type: "application/json" }));
 
@@ -115,6 +117,17 @@ app.post("/stripe-webhook", async (req, res) => {
           }
 
           console.log(`VIP tag added: ${baseCharacter} -> ${vipCharacter}`);
+
+          /* LOG VIP CREATION */
+          await pool.request()
+            .input("sessionId", sql.VarChar(255), sessionId)
+            .input("oldName", sql.VarChar(50), baseCharacter)
+            .input("newName", sql.VarChar(60), vipCharacter)
+            .query(`
+              INSERT INTO cash.dbo.vip_log
+              (stripe_session_id, old_character_name, new_character_name)
+              VALUES (@sessionId, @oldName, @newName)
+            `);
         }
 
         finalCharacter = vipCharacter;
@@ -196,6 +209,85 @@ app.post("/stripe-webhook", async (req, res) => {
   }
 
   return res.json({ received: true });
+});
+
+/* ADMIN: SEND COINS */
+app.post("/admin/send-coins", async (req, res) => {
+  try {
+    const { character, coins, adminSecret } = req.body;
+
+    if (adminSecret !== process.env.ADMIN_SECRET) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized"
+      });
+    }
+
+    if (!character || !coins) {
+      return res.status(400).json({
+        success: false,
+        message: "Character and coins are required"
+      });
+    }
+
+    const coinAmount = parseInt(coins, 10);
+
+    if (isNaN(coinAmount) || coinAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid coin amount"
+      });
+    }
+
+    const pool = await sql.connect(dbConfig);
+
+    const checkCharacter = await pool.request()
+      .input("character", sql.VarChar(60), character.trim())
+      .query(`
+        SELECT character_name
+        FROM character.dbo.USER_CHARACTER
+        WHERE character_name = @character
+      `);
+
+    if (checkCharacter.recordset.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Character not found"
+      });
+    }
+
+    const updateResult = await pool.request()
+      .input("character", sql.VarChar(60), character.trim())
+      .input("coins", sql.Int, coinAmount)
+      .query(`
+        UPDATE cash.dbo.user_cash
+        SET amount = amount + @coins
+        WHERE user_no = (
+          SELECT user_no
+          FROM character.dbo.USER_CHARACTER
+          WHERE character_name = @character
+        )
+      `);
+
+    if (updateResult.rowsAffected[0] === 0) {
+      return res.status(500).json({
+        success: false,
+        message: "Coins were not added"
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: `${coinAmount} coins sent to ${character.trim()}`
+    });
+
+  } catch (err) {
+    console.log("ADMIN SEND COINS ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error"
+    });
+  }
 });
 
 /* LIVE CHARACTER RANKING API */
