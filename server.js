@@ -35,6 +35,33 @@ function adminUnauthorized(res) {
   });
 }
 
+/* ADMIN USERNAME HELPER
+   Lovable kan dit meesturen in body, bv:
+   "adminUsername": "bellagm"
+*/
+function getAdminUsername(req) {
+  return req.body?.adminUsername?.trim() || "unknown_admin";
+}
+
+/* ADMIN ACTION LOG HELPER */
+async function logAdminAction(pool, adminUsername, actionType, targetCharacter = null, coinAmount = null, details = null) {
+  try {
+    await pool.request()
+      .input("adminUsername", sql.VarChar(50), adminUsername)
+      .input("actionType", sql.VarChar(50), actionType)
+      .input("targetCharacter", sql.VarChar(60), targetCharacter)
+      .input("coinAmount", sql.Int, coinAmount)
+      .input("details", sql.VarChar(255), details)
+      .query(`
+        INSERT INTO cash.dbo.admin_action_log
+        (admin_username, action_type, target_character, coin_amount, details)
+        VALUES (@adminUsername, @actionType, @targetCharacter, @coinAmount, @details)
+      `);
+  } catch (err) {
+    console.log("ADMIN ACTION LOG ERROR:", err);
+  }
+}
+
 /* Rank query helper */
 const rankingQuery = `
   SELECT TOP 100
@@ -148,7 +175,6 @@ app.post("/stripe-webhook", async (req, res) => {
         const existingCharacter = charCheck.recordset[0].character_name;
         const alreadyVip = existingCharacter.startsWith("{VIP}");
 
-        /* Rename to VIP if not already VIP */
         if (!alreadyVip) {
           const renameResult = await pool.request()
             .input("newName", sql.VarChar(60), vipCharacter)
@@ -166,7 +192,6 @@ app.post("/stripe-webhook", async (req, res) => {
 
           console.log(`VIP tag added: ${baseCharacter} -> ${vipCharacter}`);
 
-          /* LOG VIP CREATION */
           await pool.request()
             .input("sessionId", sql.VarChar(255), sessionId)
             .input("oldName", sql.VarChar(50), baseCharacter)
@@ -265,6 +290,7 @@ app.post("/admin/send-coins", async (req, res) => {
     if (!isAdminAuthorized(req)) return adminUnauthorized(res);
 
     const { character, coins } = req.body;
+    const adminUsername = getAdminUsername(req);
 
     if (!character || !coins) {
       return res.status(400).json({
@@ -319,6 +345,15 @@ app.post("/admin/send-coins", async (req, res) => {
       });
     }
 
+    await logAdminAction(
+      pool,
+      adminUsername,
+      "send_coins",
+      character.trim(),
+      coinAmount,
+      "Manual coin send"
+    );
+
     return res.json({
       success: true,
       message: `${coinAmount} coins sent to ${character.trim()}`
@@ -339,6 +374,7 @@ app.post("/admin/add-vip", async (req, res) => {
     if (!isAdminAuthorized(req)) return adminUnauthorized(res);
 
     const { character } = req.body;
+    const adminUsername = getAdminUsername(req);
 
     if (!character || !character.trim()) {
       return res.status(400).json({
@@ -417,6 +453,15 @@ app.post("/admin/add-vip", async (req, res) => {
         VALUES (@sessionId, @oldName, @newName)
       `);
 
+    await logAdminAction(
+      pool,
+      adminUsername,
+      "add_vip",
+      existingCharacter,
+      null,
+      `Renamed to ${vipCharacter}`
+    );
+
     return res.json({
       success: true,
       message: `VIP tag added: ${existingCharacter} -> ${vipCharacter}`
@@ -437,6 +482,7 @@ app.post("/admin/remove-vip", async (req, res) => {
     if (!isAdminAuthorized(req)) return adminUnauthorized(res);
 
     const { character } = req.body;
+    const adminUsername = getAdminUsername(req);
 
     if (!character || !character.trim()) {
       return res.status(400).json({
@@ -511,6 +557,15 @@ app.post("/admin/remove-vip", async (req, res) => {
         VALUES (@sessionId, @oldName, @newName)
       `);
 
+    await logAdminAction(
+      pool,
+      adminUsername,
+      "remove_vip",
+      existingVipCharacter,
+      null,
+      `Renamed to ${normalCharacter}`
+    );
+
     return res.json({
       success: true,
       message: `VIP tag removed: ${existingVipCharacter} -> ${normalCharacter}`
@@ -531,6 +586,7 @@ app.post("/admin/character-search", async (req, res) => {
     if (!isAdminAuthorized(req)) return adminUnauthorized(res);
 
     const { character } = req.body;
+    const adminUsername = getAdminUsername(req);
 
     if (!character || !character.trim()) {
       return res.status(400).json({
@@ -595,6 +651,15 @@ app.post("/admin/character-search", async (req, res) => {
       });
     }
 
+    await logAdminAction(
+      pool,
+      adminUsername,
+      "character_search",
+      inputCharacter,
+      null,
+      "Character search opened"
+    );
+
     return res.json({
       success: true,
       character: result.recordset[0]
@@ -615,6 +680,7 @@ app.post("/admin/donation-logs", async (req, res) => {
     if (!isAdminAuthorized(req)) return adminUnauthorized(res);
 
     const limit = Math.min(parseInt(req.body.limit || 50, 10), 200);
+    const adminUsername = getAdminUsername(req);
 
     const pool = await sql.connect(dbConfig);
 
@@ -630,6 +696,15 @@ app.post("/admin/donation-logs", async (req, res) => {
         FROM cash.dbo.donation_log
         ORDER BY created_at DESC, id DESC
       `);
+
+    await logAdminAction(
+      pool,
+      adminUsername,
+      "view_donation_logs",
+      null,
+      null,
+      `Opened donation logs with limit ${limit}`
+    );
 
     return res.json({
       success: true,
@@ -650,8 +725,18 @@ app.post("/admin/rankings/characters", async (req, res) => {
   try {
     if (!isAdminAuthorized(req)) return adminUnauthorized(res);
 
+    const adminUsername = getAdminUsername(req);
     const pool = await sql.connect(dbConfig);
     const result = await pool.request().query(rankingQuery);
+
+    await logAdminAction(
+      pool,
+      adminUsername,
+      "view_rankings",
+      null,
+      null,
+      "Opened character rankings"
+    );
 
     return res.json({
       success: true,
@@ -660,6 +745,43 @@ app.post("/admin/rankings/characters", async (req, res) => {
 
   } catch (err) {
     console.log("ADMIN RANKINGS ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error"
+    });
+  }
+});
+
+/* ADMIN: ACTIVITY LOG */
+app.post("/admin/activity-log", async (req, res) => {
+  try {
+    if (!isAdminAuthorized(req)) return adminUnauthorized(res);
+
+    const limit = Math.min(parseInt(req.body.limit || 100, 10), 300);
+    const pool = await sql.connect(dbConfig);
+
+    const result = await pool.request()
+      .input("limit", sql.Int, limit)
+      .query(`
+        SELECT TOP (@limit)
+          id,
+          admin_username,
+          action_type,
+          target_character,
+          coin_amount,
+          details,
+          created_at
+        FROM cash.dbo.admin_action_log
+        ORDER BY created_at DESC, id DESC
+      `);
+
+    return res.json({
+      success: true,
+      logs: result.recordset
+    });
+
+  } catch (err) {
+    console.log("ADMIN ACTIVITY LOG ERROR:", err);
     return res.status(500).json({
       success: false,
       message: "Server error"
