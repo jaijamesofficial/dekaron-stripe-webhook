@@ -2,6 +2,7 @@ const express = require("express");
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const sql = require("mssql");
 const cors = require("cors");
+const itemMap = require("./itemmap");
 
 const app = express();
 
@@ -60,6 +61,88 @@ async function logAdminAction(pool, adminUsername, actionType, targetCharacter =
   } catch (err) {
     console.log("ADMIN ACTION LOG ERROR:", err);
   }
+}
+
+/* EQUIPMENT SLOT HELPER */
+function getEquipmentSlotType(lineNo) {
+  const n = Number(lineNo);
+
+  if ([0, 1, 2, 3].includes(n)) return "Ring";
+  if ([4, 5, 13, 14].includes(n)) return "Weapon";
+  if ([6, 7].includes(n)) return "Wing / Amulet";
+  if ([8, 9, 10, 11, 12].includes(n)) return "Gear";
+  if ([15, 16, 17, 18, 19, 20, 21, 22, 23, 24].includes(n)) return "Potion / Candy";
+
+  return "Unknown";
+}
+
+function getEquipmentSlotName(lineNo) {
+  const n = Number(lineNo);
+
+  const slotNames = {
+    0: "Ring Slot 1",
+    1: "Ring Slot 2",
+    2: "Ring Slot 3",
+    3: "Ring Slot 4",
+    4: "Weapon Slot 1",
+    5: "Weapon Slot 2",
+    6: "Wing Slot",
+    7: "Amulet Slot",
+    8: "Helmet",
+    9: "Armor",
+    10: "Gloves",
+    11: "Boots",
+    12: "Pants",
+    13: "Weapon Slot 3",
+    14: "Weapon Slot 4",
+    15: "Potion Slot 1",
+    16: "Potion Slot 2",
+    17: "Potion Slot 3",
+    18: "Potion Slot 4",
+    19: "Potion Slot 5",
+    20: "Potion Slot 6",
+    21: "Potion Slot 7",
+    22: "Potion Slot 8",
+    23: "Potion Slot 9",
+    24: "Potion Slot 10"
+  };
+
+  return slotNames[n] || `Slot ${n}`;
+}
+
+function getItemNameByIndex(wIndex) {
+  const idx = Number(wIndex);
+  if (!idx || idx <= 0) return null;
+  return itemMap[idx] || `Unknown Item (${idx})`;
+}
+
+/* EQUIPMENT FETCH HELPER */
+async function fetchCharacterEquipment(pool, characterName) {
+  const equipmentResult = await pool.request()
+    .input("character", sql.VarChar(60), characterName)
+    .query(`
+      SELECT
+        us.character_no,
+        us.line_no,
+        us.wIndex
+      FROM character.dbo.USER_SUIT us
+      INNER JOIN character.dbo.USER_CHARACTER uc
+        ON uc.character_no = us.character_no
+      WHERE uc.character_name = @character
+        AND us.line_no BETWEEN 0 AND 24
+      ORDER BY us.line_no ASC
+    `);
+
+  const equipment = equipmentResult.recordset.map((row) => ({
+    line_no: row.line_no,
+    slot_type: getEquipmentSlotType(row.line_no),
+    slot_name: getEquipmentSlotName(row.line_no),
+    wIndex: row.wIndex,
+    item_name: getItemNameByIndex(row.wIndex),
+    equipped: Number(row.wIndex) > 0
+  }));
+
+  return equipment;
 }
 
 /* Rank query helper */
@@ -585,7 +668,7 @@ app.post("/admin/character-search", async (req, res) => {
   try {
     if (!isAdminAuthorized(req)) return adminUnauthorized(res);
 
-    const { character } = req.body;
+    const { character, includeEquipment } = req.body;
     const adminUsername = getAdminUsername(req);
 
     if (!character || !character.trim()) {
@@ -626,6 +709,7 @@ app.post("/admin/character-search", async (req, res) => {
           uc.wWinRecord AS pvp_win,
           uc.wLoseRecord AS pvp_lose,
           uc.user_no AS user_no,
+          uc.character_no AS character_no,
           CASE
             WHEN UPPER(uc.character_name) LIKE '{VIP}%'
             THEN 1
@@ -651,22 +735,114 @@ app.post("/admin/character-search", async (req, res) => {
       });
     }
 
+    const foundCharacter = result.recordset[0];
+    let equipment = [];
+
+    if (includeEquipment === true) {
+      equipment = await fetchCharacterEquipment(pool, foundCharacter.character_name);
+    }
+
     await logAdminAction(
       pool,
       adminUsername,
       "character_search",
       inputCharacter,
       null,
-      "Character search opened"
+      includeEquipment === true
+        ? "Character search opened with equipment"
+        : "Character search opened"
     );
 
     return res.json({
       success: true,
-      character: result.recordset[0]
+      character: foundCharacter,
+      equipment
     });
 
   } catch (err) {
     console.log("ADMIN CHARACTER SEARCH ERROR:", err);
+    return res.status(500).json({
+      success: false,
+      message: "Server error"
+    });
+  }
+});
+
+/* ADMIN: CHARACTER EQUIPMENT CHECKER */
+app.post("/admin/character-equipment", async (req, res) => {
+  try {
+    if (!isAdminAuthorized(req)) return adminUnauthorized(res);
+
+    const { character } = req.body;
+    const adminUsername = getAdminUsername(req);
+
+    if (!character || !character.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Character is required"
+      });
+    }
+
+    const inputCharacter = character.trim();
+    const normalCharacter = inputCharacter.startsWith("{VIP}")
+      ? inputCharacter.substring(5)
+      : inputCharacter;
+    const vipCharacter = `{VIP}${normalCharacter}`;
+
+    const pool = await sql.connect(dbConfig);
+
+    const charResult = await pool.request()
+      .input("inputCharacter", sql.VarChar(60), inputCharacter)
+      .input("normalCharacter", sql.VarChar(60), normalCharacter)
+      .input("vipCharacter", sql.VarChar(60), vipCharacter)
+      .query(`
+        SELECT TOP 1
+          uc.character_name,
+          uc.character_no,
+          CASE uc.byPCClass
+            WHEN 0 THEN 'Azure Knight'
+            WHEN 1 THEN 'Segita Hunter'
+            WHEN 2 THEN 'Incar Magician'
+            WHEN 3 THEN 'Vicious Summoner'
+            WHEN 4 THEN 'Segnale'
+            WHEN 5 THEN 'Bagi Warrior'
+            WHEN 6 THEN 'Aloken'
+            ELSE 'Unknown'
+          END AS class_name,
+          uc.wLevel AS level
+        FROM character.dbo.USER_CHARACTER uc
+        WHERE uc.character_name = @inputCharacter
+           OR uc.character_name = @normalCharacter
+           OR uc.character_name = @vipCharacter
+      `);
+
+    if (charResult.recordset.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Character not found"
+      });
+    }
+
+    const foundCharacter = charResult.recordset[0];
+    const equipment = await fetchCharacterEquipment(pool, foundCharacter.character_name);
+
+    await logAdminAction(
+      pool,
+      adminUsername,
+      "view_equipment",
+      foundCharacter.character_name,
+      null,
+      "Opened equipment checker"
+    );
+
+    return res.json({
+      success: true,
+      character: foundCharacter,
+      equipment
+    });
+
+  } catch (err) {
+    console.log("ADMIN CHARACTER EQUIPMENT ERROR:", err);
     return res.status(500).json({
       success: false,
       message: "Server error"
