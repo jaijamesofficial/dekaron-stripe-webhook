@@ -1,9 +1,11 @@
 const express = require("express");
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 const sql = require("mssql");
+const cors = require("cors");
 
 const app = express();
 
+app.use(cors());
 app.use(express.json());
 
 /* Stripe webhook raw body */
